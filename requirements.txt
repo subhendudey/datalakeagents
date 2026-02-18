@@ -2,7 +2,7 @@
 pandas>=2.0.0
 numpy>=1.24.0
 pyarrow>=12.0.0
-delta-lake>=0.15.0
+delta-rs>=0.17.0
 azure-storage-blob>=12.17.0
 boto3>=1.26.0
 

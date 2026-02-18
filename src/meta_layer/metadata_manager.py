@@ -100,25 +100,40 @@ class MetadataManager:
         datasets_file = self.metadata_store_path / "datasets.json"
         schemas_file = self.metadata_store_path / "schemas.json"
         
+        # Load datasets
         if datasets_file.exists():
             with open(datasets_file, 'r') as f:
                 datasets_data = json.load(f)
                 for dataset_id, data in datasets_data.items():
-                    # Convert datetime strings back to datetime objects
-                    data['created_at'] = datetime.fromisoformat(data['created_at'])
-                    data['updated_at'] = datetime.fromisoformat(data['updated_at'])
-                    data['data_quality_level'] = DataQualityLevel(data['data_quality_level'])
-                    data['processing_status'] = ProcessingStatus(data['processing_status'])
+                    # Convert string booleans back to booleans
+                    if 'cdisc_compliant' in data:
+                        if data['cdisc_compliant'].lower() == 'true':
+                            data['cdisc_compliant'] = True
+                        else:
+                            data['cdisc_compliant'] = False
                     
-                    metadata = DatasetMetadata(**data)
-                    self.datasets[dataset_id] = metadata
+                    # Convert processing status
+                    if 'processing_status' in data:
+                        data['processing_status'] = ProcessingStatus(data['processing_status'])
+                    
+                    try:
+                        metadata = DatasetMetadata(**data)
+                        self.datasets[dataset_id] = metadata
+                    except TypeError as e:
+                        logger.warning(f"Error loading dataset {dataset_id}: {e}")
+                        # Skip this dataset and continue
+                        continue
         
         if schemas_file.exists():
             with open(schemas_file, 'r') as f:
                 schemas_data = json.load(f)
                 for dataset_id, columns_data in schemas_data.items():
                     columns = {}
-                    for col_name, col_data in columns_data.items():
+                    for col_name, col_data in columns_data['columns']:
+                        # Convert string booleans back to booleans
+                        if 'nullable' in col_data:
+                            col_data['nullable'] = col_data['nullable'].lower() == 'true'
+                        
                         columns[col_name] = ColumnMetadata(**col_data)
                     self.schemas[dataset_id] = columns
         
@@ -126,32 +141,84 @@ class MetadataManager:
     
     def _save_metadata(self):
         """Save metadata to storage"""
-        # Save datasets metadata
+        import numpy as np
+        
         datasets_file = self.metadata_store_path / "datasets.json"
+        schemas_file = self.metadata_store_path / "schemas.json"
+        
+        def convert_numpy_types(obj):
+            """Convert numpy types to native Python types"""
+            if isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_numpy_types(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy_types(item) for item in obj]
+            elif isinstance(obj, bool):
+                return str(obj)  # Convert bool to string for JSON
+            return obj
+        
+        # Prepare datasets data
         datasets_data = {}
-        for dataset_id, metadata in self.datasets.items():
-            data = asdict(metadata)
-            # Convert datetime objects to strings
-            data['created_at'] = metadata.created_at.isoformat()
-            data['updated_at'] = metadata.updated_at.isoformat()
-            data['data_quality_level'] = metadata.data_quality_level.value
-            data['processing_status'] = metadata.processing_status.value
+        for dataset_id, dataset in self.datasets.items():
+            # Get the cdisc_compliant value safely
+            cdisc_compliant_value = getattr(dataset, 'cdisc_compliant', False)
+            
+            data = {
+                "dataset_id": dataset.dataset_id,
+                "name": dataset.name,
+                "description": dataset.description,
+                "domain": dataset.domain,
+                "file_path": dataset.file_path,
+                "created_by": dataset.created_by,
+                "created_at": dataset.created_at.isoformat(),
+                "updated_at": dataset.updated_at.isoformat(),
+                "row_count": dataset.row_count,
+                "column_count": dataset.column_count,
+                "data_quality_level": dataset.data_quality_level.value if dataset.data_quality_level else None,
+                "tags": dataset.tags,
+                "lineage": dataset.lineage,
+                "access_level": dataset.access_level,
+                "cdisc_compliant": str(cdisc_compliant_value),  # Convert bool to string
+                "terminology_mappings": getattr(dataset, 'terminology_mappings', {})
+            }
             datasets_data[dataset_id] = data
         
         with open(datasets_file, 'w') as f:
-            json.dump(datasets_data, f, indent=2)
+            json.dump(datasets_data, f, indent=2, default=convert_numpy_types)
         
         # Save schemas metadata
-        schemas_file = self.metadata_store_path / "schemas.json"
         schemas_data = {}
         for dataset_id, columns in self.schemas.items():
             schemas_data[dataset_id] = {
-                col_name: asdict(col_metadata) 
-                for col_name, col_metadata in columns.items()
+                "dataset_id": dataset_id,
+                "columns": [
+                    {
+                        "column_name": col.column_name,
+                        "data_type": col.data_type,
+                        "description": col.description,
+                        "nullable": str(col.nullable),  # Convert bool to string
+                        "unique_values": convert_numpy_types(col.unique_values),
+                        "null_count": convert_numpy_types(col.null_count),
+                        "min_value": convert_numpy_types(col.min_value),
+                        "max_value": convert_numpy_types(col.max_value),
+                        "mean_value": convert_numpy_types(col.mean_value),
+                        "std_value": convert_numpy_types(col.std_value),
+                        "semantic_concept_id": col.semantic_concept_id,
+                        "terminology_mapping": col.terminology_mapping,
+                        "validation_rules": col.validation_rules,
+                        "data_quality_score": col.data_quality_score
+                    }
+                    for col in columns.values()
+                ]
             }
         
         with open(schemas_file, 'w') as f:
-            json.dump(schemas_data, f, indent=2)
+            json.dump(schemas_data, f, indent=2, default=convert_numpy_types)
         
         logger.info("Metadata saved to storage")
     
@@ -211,21 +278,31 @@ class MetadataManager:
             null_count = col_data.isnull().sum()
             unique_values = col_data.nunique()
             
+            # Handle both scalar and Series data with proper type checking
+            try:
+                max_value = col_data.max() if hasattr(col_data, 'max') else None
+                mean_value = float(col_data.mean()) if hasattr(col_data, 'mean') and col_data.dtype in ['int64', 'float64'] else None
+                std_value = float(col_data.std()) if hasattr(col_data, 'std') and col_data.dtype in ['int64', 'float64'] else None
+                min_value = col_data.min() if hasattr(col_data, 'min') and col_data.dtype in ['int64', 'float64'] else None
+            except (TypeError, ValueError):
+                # Handle string/object columns
+                max_value = None
+                mean_value = None
+                std_value = None
+                min_value = None
+            
             col_metadata = ColumnMetadata(
                 column_name=column,
                 data_type=str(col_data.dtype),
                 description=f"Column {column}",
                 nullable=null_count > 0,
                 unique_values=unique_values,
-                null_count=null_count
+                null_count=null_count,
+                min_value=min_value,
+                max_value=max_value,
+                mean_value=mean_value,
+                std_value=std_value
             )
-            
-            # Add numeric statistics if applicable
-            if pd.api.types.is_numeric_dtype(col_data):
-                col_metadata.min_value = col_data.min()
-                col_metadata.max_value = col_data.max()
-                col_metadata.mean_value = col_data.mean()
-                col_metadata.std_value = col_data.std()
             
             columns[column] = col_metadata
         

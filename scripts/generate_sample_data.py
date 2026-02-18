@@ -154,8 +154,9 @@ def generate_adverse_events(demographics: pd.DataFrame) -> pd.DataFrame:
                 resolution_date = None
             
             # Causality assessment
-            causality = random.choice(['Related', 'Possibly related', 'Unrelated', 'Unlikely'], 
-                                    p=[0.3, 0.4, 0.2, 0.1])
+            causality_options = ['Related', 'Possibly related', 'Unrelated', 'Unlikely']
+            causality_weights = [0.3, 0.4, 0.2, 0.1]
+            causality = random.choices(causality_options, weights=causality_weights)[0]
             
             records.append({
                 'patient_id': patient['patient_id'],
@@ -230,8 +231,10 @@ def generate_efficacy_data(demographics: pd.DataFrame) -> pd.DataFrame:
         # Generate baseline and follow-up measurements
         baseline_score = random.randint(20, 80)
         
-        # Treatment response (some patients respond better)
-        response_factor = random.choice([0.8, 0.9, 1.0, 1.1, 1.2], p=[0.1, 0.2, 0.4, 0.2, 0.1])
+        # Treatment response (some patients respond better than others)
+        response_options = [0.8, 0.9, 1.0, 1.1, 1.2]
+        response_weights = [0.1, 0.2, 0.4, 0.2, 0.1]
+        response_factor = random.choices(response_options, weights=response_weights)[0]
         
         for timepoint in [0, 4, 8, 12, 24]:  # weeks
             measurement_date = patient['enrollment_date'] + timedelta(weeks=timepoint)

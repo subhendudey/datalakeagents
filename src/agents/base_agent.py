@@ -12,8 +12,21 @@ from enum import Enum
 import json
 from datetime import datetime
 import pandas as pd
-from langchain.llms.base import LLM
-from langchain.schema import BaseMessage, HumanMessage, AIMessage
+try:
+    from langchain.llms.base import LLM
+    from langchain.schema import BaseMessage, HumanMessage, AIMessage
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+    # Create dummy classes for type hints
+    class LLM:
+        pass
+    class BaseMessage:
+        pass
+    class HumanMessage(BaseMessage):
+        pass
+    class AIMessage(BaseMessage):
+        pass
 from loguru import logger
 
 

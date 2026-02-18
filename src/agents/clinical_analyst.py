@@ -13,7 +13,14 @@ import re
 from loguru import logger
 
 from .base_agent import BaseAgent, AgentCapability, AgentContext, AgentResult
-from ..meta_layer.semantic_model import SemanticModel, ClinicalDomain
+try:
+    from ..meta_layer.semantic_model import SemanticModel, ClinicalDomain
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    from meta_layer.semantic_model import SemanticModel, ClinicalDomain
 
 
 class ClinicalDataAnalyst(BaseAgent):

@@ -7,7 +7,7 @@ Handles loading and managing configuration settings for the data lake.
 import os
 import yaml
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from loguru import logger
 

@@ -97,8 +97,16 @@ class ClinicalOntology:
         
         # Add terminology mapping if available
         if concept.terminology and concept.terminology_code:
-            terminology_uri = URIRef(f"http://terminology.org/{concept.terminology.lower()}/{concept.terminology_code}")
-            self.graph.add((concept_uri, OWL.sameAs, terminology_uri))
+            # Create proper URI format
+            if concept.terminology.lower() == "snomed ct":
+                terminology_uri = f"http://snomed.info/id/{concept.terminology_code}"
+            elif concept.terminology.lower() == "loinc":
+                terminology_uri = f"http://loinc.org/{concept.terminology_code}"
+            else:
+                # Generic format for other terminologies
+                terminology_uri = f"http://terminology.org/{concept.terminology.lower()}/{concept.terminology_code}"
+            
+            self.graph.add((concept_uri, OWL.sameAs, URIRef(terminology_uri)))
         
         # Add synonyms
         for synonym in concept.synonyms:

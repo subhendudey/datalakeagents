@@ -12,8 +12,15 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from delta import DeltaTable
 from loguru import logger
+
+# Optional Delta Lake support
+try:
+    from delta import DeltaTable
+    DELTA_AVAILABLE = True
+except ImportError:
+    DELTA_AVAILABLE = False
+    logger.warning("Delta Lake not available. Install with: pip install delta-rs")
 
 
 class StorageBackend(ABC):
@@ -73,6 +80,16 @@ class LocalStorage(StorageBackend):
                     json.dump(data, f, indent=2)
             else:
                 raise ValueError(f"Unsupported data type for json: {type(data)}")
+        elif format == "txt":
+            # Simple text file support
+            if isinstance(data, str):
+                with open(full_path, 'w') as f:
+                    f.write(data)
+            elif data == "":
+                # Create empty file
+                full_path.touch()
+            else:
+                raise ValueError(f"Unsupported data type for txt: {type(data)}")
         else:
             raise ValueError(f"Unsupported format: {format}")
     
@@ -162,6 +179,26 @@ class DataLakeStorage:
         """Read data from curated layer"""
         path = f"{self.curated_path}/{dataset}"
         return self.backend.read(path, format)
+    
+    def list_files(self, layer: Optional[str] = None) -> Dict[str, List[str]]:
+        """List files in data lake layers"""
+        layers = {
+            "raw": self.raw_path,
+            "processed": self.processed_path,
+            "curated": self.curated_path
+        }
+        
+        if layer:
+            layers = {layer: layers[layer]}
+        
+        result = {}
+        for layer_name, layer_path in layers.items():
+            files = self.backend.list_files(layer_path)
+            # Filter out .gitkeep files
+            datasets = [f for f in files if not f.endswith('.gitkeep')]
+            result[layer_name] = datasets
+        
+        return result
     
     def list_datasets(self, layer: Optional[str] = None) -> Dict[str, List[str]]:
         """List all datasets by layer"""

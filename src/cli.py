@@ -16,11 +16,22 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from loguru import logger
 
-from .data_lake import DataLakeStorage
-from .meta_layer import MetadataManager, SemanticModel
-from .ingestion import IngestionPipeline, IngestionConfig
-from .agents import AgentOrchestrator
-from .utils import settings
+try:
+    from .data_lake import DataLakeStorage
+    from .meta_layer import MetadataManager, SemanticModel
+    from .ingestion import IngestionPipeline, IngestionConfig
+    from .agents import AgentOrchestrator
+    from .utils import settings
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    from data_lake import DataLakeStorage
+    from meta_layer import MetadataManager, SemanticModel
+    from ingestion import IngestionPipeline, IngestionConfig
+    from agents import AgentOrchestrator
+    from utils.config import settings
 
 app = typer.Typer(help="Clinical Trials Data Lake CLI")
 console = Console()
@@ -57,7 +68,10 @@ def init(
         
         # Save semantic model
         task4 = progress.add_task("Saving semantic model...", total=None)
-        semantic_model.export_semantic_model(f"{base_path}/schemas/semantic_model.json")
+        schemas_dir = f"{base_path}/schemas"
+        import os
+        os.makedirs(schemas_dir, exist_ok=True)
+        semantic_model.export_semantic_model(f"{schemas_dir}/semantic_model.json")
         progress.update(task4, description="✅ Semantic model saved")
     
     console.print(f"[bold green]✅ Data lake initialized successfully at {base_path}[/bold green]")
@@ -150,8 +164,12 @@ def analyze(
         try:
             data = storage.read_curated(f"{dataset_id}.parquet")
         except:
-            # Fallback to processed layer
-            data = storage.read_processed(f"{dataset_id}.parquet")
+            # Fallback to processed layer with correct naming convention
+            try:
+                data = storage.read_processed(f"{dataset_id}_processed.parquet")
+            except:
+                # Try without suffix as fallback
+                data = storage.read_processed(f"{dataset_id}.parquet")
         
         metadata = metadata_manager.get_dataset_metadata(dataset_id).__dict__ if metadata_manager.get_dataset_metadata(dataset_id) else {}
         
@@ -217,6 +235,168 @@ def analyze(
 
 
 @app.command()
+def analyze_all(
+    query: Optional[str] = typer.Option(None, help="Analysis query to apply to all datasets"),
+    agents: Optional[List[str]] = typer.Option(None, help="Specific agents to use"),
+    layer: Optional[str] = typer.Option("processed", help="Layer to analyze (raw, processed, curated)"),
+    config_file: Optional[str] = typer.Option(None, help="Configuration file path"),
+    basic: bool = typer.Option(True, help="Use basic analysis instead of AI agents")
+):
+    """Analyze all datasets in the data lake"""
+    console.print("[bold blue]Analyzing all datasets...[/bold blue]")
+    
+    # Initialize components
+    storage = DataLakeStorage(settings.data_lake.base_path)
+    metadata_manager = MetadataManager()
+    
+    # Get all datasets from specified layer
+    datasets = storage.list_datasets(layer)
+    dataset_files = []
+    
+    # Collect dataset files from the specified layer
+    if layer in datasets:
+        dataset_files = datasets[layer]
+    else:
+        console.print(f"[red]No datasets found in layer '{layer}'[/red]")
+        raise typer.Exit(1)
+    
+    if not dataset_files:
+        console.print(f"[yellow]No datasets found in {layer} layer[/yellow]")
+        return
+    
+    console.print(f"[bold]Found {len(dataset_files)} datasets in {layer} layer[/bold]")
+    
+    # Analyze each dataset
+    successful_analyses = 0
+    failed_analyses = 0
+    
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        
+        for i, dataset_path in enumerate(dataset_files):
+            dataset_name = Path(dataset_path).stem
+            task = progress.add_task(f"Analyzing {dataset_name}... ({i+1}/{len(dataset_files)})", total=None)
+            
+            try:
+                # Load dataset
+                try:
+                    if layer == "curated":
+                        data = storage.read_curated(dataset_path)
+                    elif layer == "processed":
+                        # Fix path issue - remove duplicate layer prefix
+                        clean_path = dataset_path.replace(f"{layer}/", "") if dataset_path.startswith(f"{layer}/") else dataset_path
+                        data = storage.read_processed(clean_path)
+                    else:  # raw
+                        data = storage.read_raw(dataset_path)
+                except Exception as e:
+                    console.print(f"[yellow]⚠️  Could not load {dataset_name}: {e}[/yellow]")
+                    failed_analyses += 1
+                    continue
+                
+                # Get metadata
+                metadata = metadata_manager.get_dataset_metadata(dataset_name)
+                
+                # Run analysis
+                try:
+                    if basic:
+                        # Basic statistical analysis
+                        results = _basic_dataset_analysis(dataset_name, data, metadata)
+                        console.print(f"[green]✅ {dataset_name}: Basic analysis completed[/green]")
+                        successful_analyses += 1
+                        
+                        # Display brief results
+                        console.print(f"   📊 {results['summary']}")
+                    else:
+                        # Try AI agent analysis
+                        semantic_model = SemanticModel()
+                        orchestrator = AgentOrchestrator()
+                        
+                        metadata_dict = metadata.__dict__ if metadata else {}
+                        
+                        results = orchestrator.analyze_dataset(
+                            dataset_id=dataset_name,
+                            data=data,
+                            metadata=metadata_dict,
+                            semantic_model=semantic_model,
+                            user_query=query,
+                            preferred_agents=agents
+                        )
+                        
+                        console.print(f"[green]✅ {dataset_name}: AI analysis completed[/green]")
+                        successful_analyses += 1
+                        
+                        # Display brief results
+                        if 'summary' in results:
+                            console.print(f"   📊 {results['summary']}")
+                    
+                except Exception as e:
+                    console.print(f"[red]❌ {dataset_name}: Analysis failed - {e}[/red]")
+                    failed_analyses += 1
+                
+            except Exception as e:
+                console.print(f"[red]❌ {dataset_name}: Error - {e}[/red]")
+                failed_analyses += 1
+            
+            progress.update(task, description=f"Completed {dataset_name}")
+    
+    # Summary
+    console.print(f"\n[bold]🎯 Analysis Summary:[/bold]")
+    console.print(f"✅ Successful analyses: {successful_analyses}")
+    console.print(f"❌ Failed analyses: {failed_analyses}")
+    console.print(f"📊 Success rate: {successful_analyses/(successful_analyses+failed_analyses)*100:.1f}%" if (successful_analyses+failed_analyses) > 0 else "N/A")
+
+
+def _basic_dataset_analysis(dataset_name: str, data: pd.DataFrame, metadata) -> dict:
+    """Perform basic statistical analysis on a dataset"""
+    import pandas as pd
+    import numpy as np
+    from datetime import datetime
+    
+    analysis = {
+        "dataset_name": dataset_name,
+        "timestamp": datetime.now().isoformat(),
+        "shape": data.shape,
+        "columns": list(data.columns),
+        "data_types": data.dtypes.to_dict(),
+        "missing_values": data.isnull().sum().to_dict(),
+        "summary_stats": {}
+    }
+    
+    # Basic statistics for numeric columns
+    numeric_cols = data.select_dtypes(include=[np.number]).columns
+    if len(numeric_cols) > 0:
+        analysis["summary_stats"] = data[numeric_cols].describe().to_dict()
+    
+    # Basic statistics for categorical columns
+    categorical_cols = data.select_dtypes(include=['object']).columns
+    if len(categorical_cols) > 0:
+        analysis["categorical_stats"] = {}
+        for col in categorical_cols:
+            analysis["categorical_stats"][col] = {
+                "unique_count": data[col].nunique(),
+                "top_values": data[col].value_counts().head().to_dict()
+            }
+    
+    # Create summary
+    summary_parts = [
+        f"{data.shape[0]} rows, {data.shape[1]} columns",
+        f"{len(numeric_cols)} numeric, {len(categorical_cols)} categorical"
+    ]
+    
+    if metadata:
+        summary_parts.append(f"Domain: {getattr(metadata, 'domain', 'Unknown')}")
+        if hasattr(metadata, 'row_count'):
+            summary_parts.append(f"Records: {metadata.row_count}")
+    
+    analysis["summary"] = " | ".join(summary_parts)
+    
+    return analysis
+
+
+@app.command()
 def list_datasets(
     layer: Optional[str] = typer.Option(None, help="Filter by layer (raw, processed, curated)"),
     domain: Optional[str] = typer.Option(None, help="Filter by domain")
@@ -231,43 +411,61 @@ def list_datasets(
     # Get datasets from storage
     datasets = storage.list_datasets(layer)
     
-    # Get metadata
+    # Create table for display
+    table = Table(title="Datasets")
+    table.add_column("Layer", style="cyan")
+    table.add_column("Dataset Name", style="magenta")
+    table.add_column("File Type", style="green")
+    table.add_column("Size", style="yellow")
+    table.add_column("Metadata", style="blue")
+    
+    # Get metadata and display datasets
     all_metadata = []
     for layer_name, dataset_list in datasets.items():
         for dataset_path in dataset_list:
             dataset_name = Path(dataset_path).stem
+            file_extension = Path(dataset_path).suffix
+            
+            # Try to get metadata
             metadata = metadata_manager.get_dataset_metadata(dataset_name)
+            metadata_status = "✅ Available" if metadata else "❌ Not available"
+            
+            # Get file size
+            try:
+                file_size = Path(f"./data/{layer_name}/{dataset_path}").stat().st_size
+                size_str = f"{file_size:,} bytes"
+            except:
+                size_str = "Unknown"
+            
+            # Add to table
+            table.add_row(
+                layer_name.capitalize(),
+                dataset_name,
+                file_extension,
+                size_str,
+                metadata_status
+            )
+            
             if metadata:
                 all_metadata.append((layer_name, metadata))
     
-    # Filter by domain if specified
-    if domain:
-        all_metadata = [(l, m) for l, m in all_metadata if m.domain == domain]
+    # Filter by domain if specified (only works for datasets with metadata)
+    if domain and all_metadata:
+        filtered_metadata = [(l, m) for l, m in all_metadata if m.domain == domain]
+        if filtered_metadata:
+            console.print(f"\n[bold]Datasets in domain '{domain}':[/bold]")
+            for layer_name, metadata in filtered_metadata:
+                console.print(f"  • {metadata.name} ({layer_name}) - {metadata.description}")
+        else:
+            console.print(f"[yellow]No datasets found in domain '{domain}'[/yellow]")
     
-    # Display results
-    if not all_metadata:
-        console.print("[yellow]No datasets found[/yellow]")
-        return
-    
-    table = Table(title="Datasets")
-    table.add_column("Layer", style="cyan")
-    table.add_column("Name", style="green")
-    table.add_column("Domain", style="blue")
-    table.add_column("Records", style="magenta")
-    table.add_column("Quality", style="yellow")
-    table.add_column("Created", style="red")
-    
-    for layer_name, metadata in all_metadata:
-        table.add_row(
-            layer_name,
-            metadata.name,
-            metadata.domain,
-            str(metadata.row_count) if metadata.row_count else "N/A",
-            metadata.data_quality_level.value,
-            metadata.created_at.strftime("%Y-%m-%d") if metadata.created_at else "N/A"
-        )
-    
+    # Display the table
     console.print(table)
+    
+    # Summary
+    total_files = sum(len(dataset_list) for dataset_list in datasets.values())
+    console.print(f"\n[bold]Total files: {total_files}[/bold]")
+    console.print(f"[bold]With metadata: {len(all_metadata)}[/bold]")
 
 
 @app.command()
@@ -295,6 +493,29 @@ def generate_sample_data(
     else:
         console.print(f"[red]Error generating sample data: {result.stderr}[/red]")
         raise typer.Exit(1)
+
+
+@app.command()
+def ingest_all():
+    """Ingest all sample data files into the data lake"""
+    console.print("[bold blue]Starting batch ingestion of all sample data files...[/bold blue]")
+    
+    import subprocess
+    import sys
+    
+    try:
+        # Run the batch ingestion script
+        result = subprocess.run([
+            sys.executable, "scripts/ingest_all_data.py"
+        ], capture_output=False, text=True, cwd=".")
+        
+        if result.returncode == 0:
+            console.print("[bold green]✅ Batch ingestion completed successfully![/bold green]")
+        else:
+            console.print("[bold red]❌ Batch ingestion failed[/bold red]")
+            
+    except Exception as e:
+        console.print(f"[bold red]❌ Error running batch ingestion: {e}[/bold red]")
 
 
 @app.command()

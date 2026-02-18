@@ -371,7 +371,7 @@ def _basic_dataset_analysis(dataset_name: str, data: pd.DataFrame, metadata) -> 
         analysis["summary_stats"] = data[numeric_cols].describe().to_dict()
     
     # Basic statistics for categorical columns
-    categorical_cols = data.select_dtypes(include=['object']).columns
+    categorical_cols = data.select_dtypes(include=['object', 'string']).columns
     if len(categorical_cols) > 0:
         analysis["categorical_stats"] = {}
         for col in categorical_cols:

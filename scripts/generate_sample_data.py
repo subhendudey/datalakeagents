@@ -327,7 +327,7 @@ def main():
     }
     
     # Save datasets
-    output_dir = "../data/sample_data"
+    output_dir = "data/sample_data"
     save_datasets(datasets, output_dir)
     
     print(f"\n✅ Sample data generation complete!")

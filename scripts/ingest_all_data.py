@@ -8,33 +8,37 @@ import sys
 from pathlib import Path
 
 # Define the sample data files with their metadata
+# Get the project root directory (where this script is located)
+PROJECT_ROOT = Path(__file__).parent.parent
+SAMPLE_DATA_DIR = PROJECT_ROOT / "data" / "sample_data"
+
 SAMPLE_FILES = [
     {
-        "file": "data/sample_data/demographics.csv",
+        "file": str(SAMPLE_DATA_DIR / "demographics.csv"),
         "name": "Sample Demographics",
         "description": "Generated sample demographics data",
         "domain": "demographics"
     },
     {
-        "file": "data/sample_data/adverse_events.csv",
+        "file": str(SAMPLE_DATA_DIR / "adverse_events.csv"),
         "name": "Sample Adverse Events",
         "description": "Generated sample adverse events data",
         "domain": "safety"
     },
     {
-        "file": "data/sample_data/efficacy_data.csv",
+        "file": str(SAMPLE_DATA_DIR / "efficacy_data.csv"),
         "name": "Sample Efficacy Data",
         "description": "Generated sample efficacy data",
         "domain": "efficacy"
     },
     {
-        "file": "data/sample_data/laboratory_data.csv",
+        "file": str(SAMPLE_DATA_DIR / "laboratory_data.csv"),
         "name": "Sample Laboratory Data",
         "description": "Generated sample laboratory data",
         "domain": "laboratory"
     },
     {
-        "file": "data/sample_data/vital_signs.csv",
+        "file": str(SAMPLE_DATA_DIR / "vital_signs.csv"),
         "name": "Sample Vital Signs",
         "description": "Generated sample vital signs data",
         "domain": "vital_signs"
